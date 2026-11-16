@@ -1,0 +1,343 @@
+// Implemented Functionality:
+//  * - Part 1: VGA Driver (Converted to C/Inline ASM)
+//  * - Part 2: PS/2 Driver (Converted to C/Inline ASM)
+//  * - Part 3: Game of Life
+//  * - Grid Drawing
+//  * - Cursor Movement (WASD)
+//  * - Cell Toggling (Space)
+//  * - Game Logic Update (N)
+//  * - Double Buffering for State Update
+//  * -> My tests show that everything is working as inteneded
+
+
+
+#include <stdio.h>
+#include <stdlib.h>
+
+void VGA_draw_point_ASM(int x, int y, short color);
+void VGA_clear_pixelbuff_ASM();
+void VGA_clear_charbuff_ASM();
+int read_PS2_data_ASM(char *data);
+void VGA_draw_line(int x1, int y1, int x2, int y2, short color);
+void GoL_draw_grid(short color);
+void GoL_fill_gridxy(int grid_x, int grid_y, short color);
+void GoL_draw_board(short color);
+void VGA_draw_rect(int x, int y, int width, int height, short color);
+
+// Importing Assembly Drivers
+void VGA_clear_pixelbuff_ASM(){
+    for (int x = 0; x < 320; x++){
+        for (int y = 0; y < 240; y++){
+            VGA_draw_point_ASM(x, y, 0x0000); // Black color
+        }
+    }
+}
+void VGA_draw_point_ASM(int x, int y, short color){
+    if (x < 0 || x >= 320 || y < 0 || y >= 240){
+        return; // Out of bounds
+    }
+    int address = 0xC8000000 | (y << 10) | (x << 1); // shift left by 10 is multiply by 1024, shift left by 1 is multiply by 2
+    asm volatile(
+        "strh %1, [%0]"                 // the instruction (%1 = color, %0 = address)
+        :                               // no output
+        : "r"(address), "r"(color)      // inputs
+        : "memory"                      // clobber list = tells the compiler memory is changed
+    );
+    
+}
+int read_PS2_data_ASM(char *data){
+    int rvalid = 0;
+    int ps2_data = 0;
+
+    asm volatile(
+        "ldr %0, =0xFF200100\n\t"           // PS2 data register address
+        "ldr %1, [%0]\n\t"                  // Load PS2 data
+        : "=&r"(rvalid), "=r"(ps2_data)     // outputs
+        :                                   // no inputs
+        : "memory"                          // clobber list = tells the compiler memory is changed
+    );
+    if ((ps2_data & 0x8000) != 0){ // Check RVALID bit
+        *data = (char)(ps2_data & 0xFF); // Get the data byte
+        return 1; // Data is valid
+    }
+    return 0; // No valid data
+}
+void VGA_clear_charbuff_ASM(){
+    for (int x = 0; x < 80; x++){
+        for (int y = 0; y < 60; y++){
+            int address = 0xC9000000 | (y << 7) | (x << 1); // shift left by 7 is multiply by 128, shift left by 1 is multiply by 2
+            asm volatile(
+                "mov r3, #0\n\t"            // ASCII code 0
+                "strh r3, [%0]\n\t"         // Store 0 at the address
+                :                           // no output
+                : "r"(address)              // input
+                : "r3", "memory"            // clobber list
+            );
+        }
+    }
+}
+
+
+
+
+
+// Helper Functions
+void VGA_draw_line(int x1, int y1, int x2, int y2, short color){
+
+    if (x1 == x2){
+        // Vertical line
+
+        // make sure y1 is less than y2
+        // swap if necessary
+        // not really needed since we control the inputs, but good practice
+        if (y1 > y2){
+            int temp = y1;
+            y1 = y2;
+            y2 = temp;
+        }
+        for (int y_current = y1; y_current <= y2; y_current++){
+                VGA_draw_point_ASM(x1, y_current, color);
+        }
+    }
+    else if (y1 == y2){
+        // Horizontal line
+        if (x1 > x2){
+            int temp = x1;
+            x1 = x2;
+            x2 = temp;
+        }
+        for (int x_current = x1; x_current <= x2; x_current++){
+            VGA_draw_point_ASM(x_current, y1, color);
+        }
+    }
+}
+void GoL_draw_grid(short color){
+    // Draw vertical lines
+    // 320 pixels / 16 cells = 20 pixels wide
+    for (int x = 0; x <= 320; x +=20){
+        VGA_draw_line(x, 0, x, 240, color);
+    }
+
+    // Draw horizontal lines
+    for (int y = 0; y <= 240; y +=20){
+        VGA_draw_line(0, y, 320, y, color);
+    }
+}
+
+
+// Part 3.2
+void VGA_draw_rect(int x1, int y1, int width, int height, short color){
+    for (int y = y1; y <= height; y++){
+        VGA_draw_line(x1, y, width, y, color);
+    }
+}
+
+// Fills a specific grid cell with a color (0-15, 0-11)
+void GoL_fill_gridxy(int grid_x, int grid_y, short color){
+    // Calculate pixel cooridinates
+    // * 20 because each grid cell is 20x20 pixels (this give the top left pixel of the cell)
+    int start_x = grid_x * 20;
+    int start_y = grid_y * 20;
+
+    // +1 and + 19 is to account for the grid lines (not to overwrite them)
+    int x1 = start_x + 1; 
+    int y1 = start_y + 1;
+    int x2 = start_x + 19;
+    int y2 = start_y + 19;
+    VGA_draw_rect(x1, y1, x2, y2, color);
+
+}
+
+
+
+// The Game Board (16x12) (this is my a race car)
+int board[12][16] = {
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0}, // Glider top
+    {0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0}, // Glider mid
+    {0,0,0,0,0,0,1,0,1,0,0,0,0,0,0,0}, // Glider bot
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}
+};
+void GoL_draw_board(short color){
+    for (int y = 0; y < 12; y++){
+        for (int x = 0; x < 16; x ++){
+            if (board[y][x] == 1){
+                GoL_fill_gridxy(x, y, color); // Active cell = white == 1
+            }
+            else {
+                GoL_fill_gridxy(x, y, 0x0000); // Inactive cell = black == 0
+            }
+        }
+    }
+}
+
+
+// Part Game logic: state update (20%)
+int count_neighbours(int grid_x, int grid_y){
+    int count = 0;
+    // check all 8 neighbors of a center cell
+    for (int dy = -1; dy <= 1; dy++){
+        for (int dx = -1; dx <= 1; dx++){
+
+            // Skip the center cell itself
+            if (dx == 0 && dy == 0){
+                continue; 
+            }
+
+            // Neighbor coordinates
+            int nx = grid_x + dx; 
+            int ny = grid_y + dy;
+
+            // Check bounds
+            if (nx >= 0 && nx < 16 && ny >= 0 && ny < 12){
+                if (board[ny][nx] == 1){
+                    count++;
+                }
+            }
+        }
+    }
+    return count;
+}
+
+void GoL_update_step(){
+    // Second data structure that mirrors the GoL board that keeps track of the number of neighbors
+    int new_board[12][16]; 
+    for (int y = 0; y < 12; y++){
+        for (int x= 0; x < 16; x++){
+            int neighbours = count_neighbours(x, y);
+            int current_state = board[y][x];
+
+            // Current cell is active
+            if (current_state == 1){
+                if (neighbours <2 || neighbours > 3){
+                    new_board[y][x] = 0; // Cell dies
+                }
+                else {
+                    new_board[y][x] = 1; // Cell lives
+                }
+               
+                
+            }
+            else {
+                // Current cell is inactive
+                if (neighbours == 3){
+                    new_board[y][x] = 1; // Cell becomes active
+                }
+                else {
+                    new_board[y][x] = 0; // Cell remains inactive
+                }
+            }
+        }
+    }
+    // Copy new_board to board
+    for (int y = 0; y < 12; y++){
+        for (int x = 0; x < 16; x++){
+            board[y][x] = new_board[y][x];
+        }
+    }
+    GoL_draw_board(0xF800); 
+
+}
+
+
+
+int main() {
+    VGA_clear_pixelbuff_ASM();
+    VGA_clear_charbuff_ASM();
+
+    GoL_draw_grid(0xFFFF); // Draw Grid
+
+    // GoL_fill_gridxy(0, 0, 0xF800);
+    // GoL_fill_gridxy(5, 5, 0x07E0);    
+    GoL_draw_board(0xF800);
+
+    // Cursor setup cooe 0 to 15, 0 to 11
+    int cursor_x = 0;
+    int cursor_y = 0;
+    GoL_fill_gridxy(cursor_x, cursor_y, 0x001F); // Blue cursor
+    char keyboard_data;
+    char last_byte = 0;
+
+
+    while(1){
+        if (read_PS2_data_ASM(&keyboard_data)){
+            // Keyboard sends F0 when a key is released too, we ignore it 
+            if (last_byte == (char)0xF0){
+                last_byte = keyboard_data; 
+                continue;
+            }
+            if (keyboard_data == (char)0xF0){
+                last_byte = keyboard_data;
+                continue;
+            }
+
+            if (board[cursor_y][cursor_x] == 1){
+                GoL_fill_gridxy(cursor_x, cursor_y, 0xF800); // Red for active cell
+            }
+            else {
+                GoL_fill_gridxy(cursor_x, cursor_y, 0x0000); // Black for inactive cell
+            }
+
+            // Process key presses
+            if (keyboard_data == (char)0x1D){ // W 
+                if (cursor_y > 0){
+                    cursor_y--;
+                }
+            }
+            else if (keyboard_data == (char)0x1B){ // S 
+                if (cursor_y < 11){
+                    cursor_y++;
+                }
+            }
+            else if (keyboard_data == (char)0x1C){ // A 
+                if (cursor_x > 0){
+                    cursor_x--;
+                }
+            }
+            else if (keyboard_data == (char)0x23){ //D 
+                if (cursor_x < 15){
+                    cursor_x++;
+                }
+            }
+            else if (keyboard_data == (char)0x29){ 
+                // Toggle cell state
+                if (board[cursor_y][cursor_x] == 1){
+                    board[cursor_y][cursor_x] = 0;
+                    GoL_fill_gridxy(cursor_x, cursor_y, 0x0000); // Set to black
+                }
+                else {
+                    board[cursor_y][cursor_x] = 1;
+                    GoL_fill_gridxy(cursor_x, cursor_y, 0xF800); // Set to red
+                }
+
+            }
+            else if (keyboard_data == 0x31){
+                GoL_update_step();
+            }
+
+        }
+
+        
+
+
+        // Draw new cursor
+        if (board[cursor_y][cursor_x] == 1){
+            GoL_fill_gridxy(cursor_x, cursor_y, 0xA21F); // Draw other color if cell is active
+        }
+        else {
+            GoL_fill_gridxy(cursor_x, cursor_y, 0x001F); // Draw new blue cursor for inactive cell
+        }
+
+        last_byte = keyboard_data; // Update last byte
+    
+        
+    }
+    return 0;
+}
